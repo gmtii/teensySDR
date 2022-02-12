@@ -170,7 +170,7 @@ void mirisdr_write_reg (uint32_t val) {
 
 int mirisdr_set_soft()
 {
-  uint32_t reg0 = 0, reg2 = 2, reg5 = 5;
+  uint32_t reg0 = 0, reg2 = 2, reg3 = 3 , reg5 = 5;
   uint64_t n, thresh, frac, lo_div = 0, fvco = 0, offset = 0, a, b, c;
   int i;
 
@@ -349,10 +349,45 @@ int mirisdr_set_soft()
   thresh /= b;
   frac /= b;
 
+
   /* In this section we reduce the resolution to the maximum extent registry */
   a = (thresh + 4094) / 4095;
   thresh = (thresh + (a / 2)) / a;
   frac = (frac + (a / 2)) / a;
+
+#define Fif1  132000000UL
+
+  uint64_t XtalFreq = 22000000;
+
+  //Calculate the actual Flo basd on the upper determined coeficients ("frac" and "thresh") (calculate without the fine tuning value - AFC)
+  uint64_t Mult = (4 * XtalFreq) / lo_div;
+  uint64_t Flo = Mult * n + (Mult * frac) / thresh;
+
+  if (switch_plan.upconvert_mixer_on)   //FLO = FC +FIF MHz for non AM modes and FLO = FC +FIF + FIF1 MHz for AM modes
+  {
+    Flo -= Fif1;
+  }
+
+  int64_t DeltaF = p.freq - Flo;           //Calculate the diference between the "set" and the "result"(without fine correction) frequency
+  DeltaF -= XtalFreq;
+
+  if (DeltaF < 0)                     //If the difference is lower than 0 => the result frequency is higher than the "set" (no able to reduce with the fine tuning AFC)
+  { //reduce frac with 1 to be able to add fine tuning (AFC)
+    frac--;
+    //Recalculate the Flo again
+    Mult = (4 * XtalFreq) / lo_div;
+    Flo = Mult * n + (Mult * frac) / thresh;
+    if (switch_plan.upconvert_mixer_on)   //FLO = FC +FIF MHz for non AM modes and FLO = FC +FIF + FIF1 MHz for AM modes
+    {
+      Flo -= Fif1;
+    }
+    DeltaF = p.freq - Flo;            //Recalculate the delta again
+    DeltaF -= XtalFreq;
+  }
+
+  uint64_t Fstep = (4 * XtalFreq) / (lo_div * thresh); //calculate the Fstep
+
+  uint32_t AFC = (4096 * DeltaF) / Fstep;           //Calculate the needed fine tune freq. to match the set frequency
 
   reg5 |= (0xFFF & thresh) << 4;
 
@@ -363,16 +398,19 @@ int mirisdr_set_soft()
   reg2 |= (0x3F & n) << 16;
   reg2 |= MIRISDR_LBAND_LNA_CALIBRATION_OFF << 22;
 
+  reg3 |= (0xFFF & AFC) << 4;           //Set the fine tuning word in register 3
+
   /* kernel driver adjusts to changing frequencies  */
 
-  mirisdr_write_reg( 0xf380);
-  mirisdr_write_reg( 0x6280);
+  //mirisdr_write_reg( 0xf380);
+  //mirisdr_write_reg( 0x6280);
   mirisdr_write_reg( switch_plan.band_select_word);
 
   mirisdr_write_reg( 0x0e); //OK
   mirisdr_write_reg( 0x03); //OK
 
   mirisdr_write_reg( reg0);
+  mirisdr_write_reg( reg3);
   mirisdr_write_reg( reg5);
   mirisdr_write_reg( reg2);
 
@@ -385,6 +423,7 @@ int mirisdr_set_center_freq(uint32_t freq)
   mirisdr_set_soft();
   mirisdr_set_gain(); // restore gain
   return 0;
+
 }
 
 
@@ -510,7 +549,7 @@ int mirisdr_set_gain()
   /* 13 => lna gain reduction -24dB */
   /* 14-16 => DC kalibrace */
   /* 17 => zrychlená DC kalibrace */
-  
+
   reg1 |= p.gain_reduction_baseband << 4;
 
   // Mixbuffer is on AM1 and AM2 inputs only
@@ -619,7 +658,7 @@ int mirisdr_set_mixer_gain( int gain)
 
 int mirisdr_set_mixbuffer_gain( int gain)
 {
-  p.gain_reduction_mixbuffer = gain & 0x03;
+  p.gain_reduction_mixbuffer = gain;
 
   return mirisdr_set_gain();
 }
@@ -633,9 +672,36 @@ int mirisdr_set_lna_gain( int gain)
 
 int mirisdr_set_baseband_gain( int gain)
 {
-  p.gain_reduction_baseband = 59 - gain;
+  p.gain_reduction_baseband = gain;
 
   return mirisdr_set_gain();
+}
+
+///////////////
+
+int mirisdr_get_lna_gain()
+{
+  return p.gain_reduction_lna;
+}
+
+int mirisdr_get_mixer_gain()
+{
+  return p.gain_reduction_mixer;
+}
+
+int mirisdr_get_mixbuffer_gain()
+{
+  return p.gain_reduction_mixbuffer;
+}
+
+int mirisdr_get_baseband_gain()
+{
+  return p.gain_reduction_baseband;
+}
+
+int mirisdr_get_tuner_gain()
+{
+  return p.gain;
 }
 
 
